@@ -6,6 +6,11 @@ namespace Infraestrutura.CacheRepositorio;
 public class Cache : ICache
 {
     private readonly IDistributedCache _distributedCache;
+    private static readonly JsonSerializerOptions JsonOptions = new() 
+    { 
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false
+    };
 
     public Cache(IDistributedCache distributedCache)
     {
@@ -14,11 +19,18 @@ public class Cache : ICache
 
     public async Task<T> GetAsync<T>(string key)
     {
-        var cachedValue = await _distributedCache.GetStringAsync(key);
-        if (cachedValue == null)
-            return default(T);
+        try
+        {
+            var cachedValue = await _distributedCache.GetStringAsync(key);
+            if (string.IsNullOrEmpty(cachedValue))
+                return default(T);
 
-        return JsonSerializer.Deserialize<T>(cachedValue);
+            return JsonSerializer.Deserialize<T>(cachedValue, JsonOptions);
+        }
+        catch
+        {
+            return default(T);
+        }
     }
 
     public async Task<bool> SetAsync<T>(string key, T value, int expiresInMinutes = 60)
@@ -30,7 +42,7 @@ public class Cache : ICache
                 AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(expiresInMinutes)
             };
 
-            var serializedValue = JsonSerializer.Serialize(value);
+            var serializedValue = JsonSerializer.Serialize(value, JsonOptions);
             await _distributedCache.SetStringAsync(key, serializedValue, options);
             return true;
         }
@@ -55,7 +67,14 @@ public class Cache : ICache
 
     public async Task<bool> ExistsAsync(string key)
     {
-        var cachedValue = await _distributedCache.GetStringAsync(key);
-        return cachedValue != null;
+        try
+        {
+            var cachedValue = await _distributedCache.GetStringAsync(key);
+            return !string.IsNullOrEmpty(cachedValue);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

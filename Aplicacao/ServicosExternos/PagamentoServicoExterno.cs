@@ -1,15 +1,15 @@
-// Aplicacao/ServicosExternos/PagamentoServicoExterno.cs
 using System.Text;
 using System.Text.Json;
 using Dominio.Dtos;
+using System.Collections.Concurrent;
 
 namespace Aplicacao.ServicosExternos;
 
 public class PagamentoServicoExterno : IPagamentoServicoExterno
 {
     private readonly HttpClient _httpClient;
-    private DateTime _ultimaVezQueADisponibilidadeFoiVerificada = DateTime.MinValue;
-    private bool _ultimoStatusBooleanoDeDisponibilidade = false;
+    private readonly ConcurrentDictionary<string, (bool IsAvailable, DateTime LastCheck)> _serviceHealth = new();
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     public PagamentoServicoExterno(HttpClient httpClient)
     {
@@ -18,30 +18,17 @@ public class PagamentoServicoExterno : IPagamentoServicoExterno
 
     public async Task<bool> VerificaDisponibilidadeDefault()
     {
-        if (_ultimaVezQueADisponibilidadeFoiVerificada.AddSeconds(5) > DateTime.Now)
-            return _ultimoStatusBooleanoDeDisponibilidade;
-
-        try
+        const string key = "default";
+        if (_serviceHealth.TryGetValue(key, out var health) && 
+            health.LastCheck.AddSeconds(5) > DateTime.UtcNow)
         {
-            var response = await _httpClient.GetAsync("http://payment-processor-default:8080/payments/service-health");
-            if (response.IsSuccessStatusCode)
-            {
-                var content = await response.Content.ReadAsStringAsync();
-                var health = JsonSerializer.Deserialize<HealthResponse>(content, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-                _ultimoStatusBooleanoDeDisponibilidade = !health.Failing;
-            }
-            else
-            {
-                _ultimoStatusBooleanoDeDisponibilidade = false;
-            }
-        }
-        catch
-        {
-            _ultimoStatusBooleanoDeDisponibilidade = false;
+            return health.IsAvailable;
         }
 
-        _ultimaVezQueADisponibilidadeFoiVerificada = DateTime.Now;
-        return _ultimoStatusBooleanoDeDisponibilidade;
+        bool isAvailable = await CheckServiceHealthInternal("http://payment-processor-default:8080");
+        _serviceHealth.AddOrUpdate(key, (isAvailable, DateTime.UtcNow), (k, v) => (isAvailable, DateTime.UtcNow));
+        
+        return isAvailable;
     }
 
     public async Task<bool> RealizaPagamentoDefault(PostPagamentoDto pagamento)
@@ -52,6 +39,25 @@ public class PagamentoServicoExterno : IPagamentoServicoExterno
     public async Task<bool> RealizaPagamentoFallback(PostPagamentoDto pagamento)
     {
         return await RealizaPagamento("http://payment-processor-fallback:8080/payments", pagamento);
+    }
+
+    private async Task<bool> CheckServiceHealthInternal(string baseUrl)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync($"{baseUrl}/payments/service-health");
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                var health = JsonSerializer.Deserialize<HealthResponse>(content, JsonOptions);
+                return health?.Failing == false;
+            }
+        }
+        catch
+        {
+            // Log error if needed
+        }
+        return false;
     }
 
     private async Task<bool> RealizaPagamento(string url, PostPagamentoDto pagamento)
@@ -65,10 +71,10 @@ public class PagamentoServicoExterno : IPagamentoServicoExterno
                 requestedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             };
 
-            var json = JsonSerializer.Serialize(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            var json = JsonSerializer.Serialize(payload, JsonOptions);
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
             
-            var response = await _httpClient.PostAsync(url, content);
+            using var response = await _httpClient.PostAsync(url, content);
             return response.IsSuccessStatusCode;
         }
         catch
