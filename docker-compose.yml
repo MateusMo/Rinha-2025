@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: payment-gateway-nginx
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - api1
+      - api2
+    networks:
+      - payment-processor
+      - backend-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "20MB"
+
+  redis:
+    image: redis:7-alpine
+    container_name: payment-gateway-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    networks:
+      - backend-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: "100MB"
+
+  api1:
+    build: .
+    container_name: payment-gateway-api1
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      - ConnectionStrings__Redis=payment-gateway-redis:6379
+    depends_on:
+      - redis
+    networks:
+      - payment-processor
+      - backend-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "100MB"
+
+  api2:
+    build: .
+    container_name: payment-gateway-api2
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      - ConnectionStrings__Redis=payment-gateway-redis:6379
+    depends_on:
+      - redis
+    networks:
+      - payment-processor
+      - backend-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "100MB"
+
+networks:
+  payment-processor:
+    external: true
+  backend-network:
+    driver: bridge
